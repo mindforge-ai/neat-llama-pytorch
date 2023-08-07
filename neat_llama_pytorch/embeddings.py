@@ -1,4 +1,8 @@
 import torch
+from typing import Tuple
+
+from .utils import reshape_for_broadcast
+
 
 def apply_rotary_emb(
     xq: torch.Tensor,
