@@ -16,6 +16,12 @@ from rich.progress import (
 )
 from neat_llama_pytorch import TransformerDecoder, Tokenizer, LlamaConfig
 
+from fairscale.nn.model_parallel.initialize import (
+    initialize_model_parallel,
+    model_parallel_is_initialized,
+)
+import os
+import sys
 
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
@@ -26,6 +32,9 @@ def sample_top_p(probs, p):
     next_token = torch.multinomial(probs_sort, num_samples=1)
     next_token = torch.gather(probs_idx, -1, next_token)
     return next_token
+
+
+torch.set_printoptions(precision=20)
 
 
 def sample(
@@ -53,13 +62,12 @@ def sample(
         )
 
     logprobs = False
-    temperature = 0.9
-    max_gen_len = 4095
-    top_p = 1
+    temperature = 0.6
+    max_gen_len = config.max_seq_len - 1
+    top_p = 0.9
 
     with progress if show_progress else nullcontext():
         prompt_tokens = [tokenizer.encode(x, bos=True, eos=False) for x in text_prompts]
-        print(prompt_tokens)
         bsz = len(prompt_tokens)
         assert bsz <= config.max_batch_size, (bsz, config.max_batch_size)
 
@@ -94,7 +102,8 @@ def sample(
                 next_token = torch.argmax(logits[:, -1], dim=-1)
 
             next_token = next_token.reshape(-1)
-
+            print(tokenizer.decode(next_token.item()), end="")
+            sys.stdout.flush()
             # only replace token if prompt has already been generated
             next_token = torch.where(
                 input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
@@ -107,25 +116,6 @@ def sample(
             if all(eos_reached):
                 break
 
-        if logprobs:
-            token_logprobs = token_logprobs.tolist()
-        out_tokens, out_logprobs = [], []
-        for i, toks in enumerate(tokens.tolist()):
-            # cut to max gen len
-            start = 0 if True else len(prompt_tokens[i])
-            toks = toks[start : len(prompt_tokens[i]) + max_gen_len]
-            probs = None
-            if logprobs:
-                probs = token_logprobs[i][start : len(prompt_tokens[i]) + max_gen_len]
-            # cut to eos tok if any
-            if tokenizer.eos_id in toks:
-                eos_idx = toks.index(tokenizer.eos_id)
-                toks = toks[:eos_idx]
-                probs = probs[:eos_idx] if logprobs else None
-            out_tokens.append(toks)
-            out_logprobs.append(probs)
-        return (out_tokens, out_logprobs if logprobs else None)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -133,14 +123,27 @@ if __name__ == "__main__":
     parser.add_argument(
         "--text-prompt",
         type=str,
-        default="Georges Seurat painting of a lemur on Saturn",
+        default="I believe the meaning of life is",
     )
+
+    if not torch.distributed.is_initialized():
+            torch.distributed.init_process_group("nccl")
+    if not model_parallel_is_initialized():
+        model_parallel_size = int(os.environ.get("WORLD_SIZE", 1))
+        initialize_model_parallel(model_parallel_size)
+
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    torch.cuda.set_device(local_rank)
+
+    torch.manual_seed(65536)
+
+    torch.set_default_tensor_type(torch.cuda.FloatTensor) # set to half to use float16
 
     with torch.inference_mode():
         args = parser.parse_args()
 
         tokenizer = Tokenizer(model_path="../tokenizer.model")
-        config = LlamaConfig(max_seq_len=2048, vocab_len=tokenizer.n_words)
+        config = LlamaConfig(max_seq_len=512, vocab_len=tokenizer.n_words)
         model = TransformerDecoder(
             vocab_len=config.vocab_len,
             embedding_dim=config.embedding_dim,
@@ -150,6 +153,7 @@ if __name__ == "__main__":
             max_batch_size=config.max_batch_size,
             max_seq_len=config.max_seq_len,
             multiple_of=config.multiple_of,
+            ffn_dim_multiplier=config.ffn_dim_multiplier
         ).to(args.device)
 
         checkpoint = torch.load(

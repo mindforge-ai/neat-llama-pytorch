@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -11,3 +12,4 @@ class LlamaConfig:
     norm_eps: float = 1e-05
     max_batch_size: int = 1
     max_seq_len: int = 4096
+    ffn_dim_multiplier: Optional[int] = None

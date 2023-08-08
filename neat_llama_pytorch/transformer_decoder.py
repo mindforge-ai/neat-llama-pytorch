@@ -6,6 +6,11 @@ from .transformer_block import TransformerBlock
 from .normalisations import RMSNorm
 from .utils import precompute_freqs_cis
 
+from fairscale.nn.model_parallel.layers import (
+    ParallelEmbedding,
+    ColumnParallelLinear
+)
+
 
 class TransformerDecoder(nn.Module):
     def __init__(
@@ -18,8 +23,10 @@ class TransformerDecoder(nn.Module):
         max_batch_size: int,
         max_seq_len: int,
         multiple_of: int,
+        ffn_dim_multiplier: int,
     ):
         super().__init__()
+
         self.vocab_len = vocab_len
         self.embedding_dim = embedding_dim
         self.num_layers = num_layers
@@ -28,25 +35,31 @@ class TransformerDecoder(nn.Module):
         self.max_batch_size = max_batch_size
         self.max_seq_len = max_seq_len
         self.multiple_of = multiple_of
+        self.ffn_dim_multiplier = ffn_dim_multiplier
 
-        self.tok_embeddings = nn.Embedding(self.vocab_len, self.embedding_dim)
+        self.tok_embeddings = ParallelEmbedding(
+            self.vocab_len, self.embedding_dim, init_method=lambda x: x
+        )
 
         self.layers = torch.nn.ModuleList()
         for layer_id in range(self.num_layers):
             self.layers.append(
                 TransformerBlock(
-                    layer_id=layer_id,
-                    embedding_dim=self.embedding_dim,
+                    layer_id,
                     num_attention_heads=self.num_attention_heads,
+                    embedding_dim=self.embedding_dim,
                     norm_eps=self.norm_eps,
-                    max_batch_size=self.max_batch_size,
-                    max_seq_len=self.max_seq_len,
                     multiple_of=self.multiple_of,
+                    ffn_dim_multiplier=self.ffn_dim_multiplier,
+                    max_batch_size=self.max_batch_size,
+                    max_seq_len=self.max_seq_len
                 )
             )
 
-        self.norm = RMSNorm(self.embedding_dim, eps=self.norm_eps)
-        self.output = nn.Linear(self.embedding_dim, self.vocab_len, bias=False)
+        self.norm = RMSNorm(self.embedding_dim, norm_eps=self.norm_eps)
+        self.output = ColumnParallelLinear(
+            self.embedding_dim, self.vocab_len, bias=False, init_method=lambda x: x
+        )
 
         self.freqs_cis = precompute_freqs_cis(
             self.embedding_dim // self.num_attention_heads, self.max_seq_len * 2
@@ -69,5 +82,5 @@ class TransformerDecoder(nn.Module):
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
-        output = self.output(h[:, -1, :])  # only compute last logits
-        return output.float()
+        output = self.output(h).float()
+        return output
