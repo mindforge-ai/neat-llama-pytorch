@@ -35,8 +35,6 @@ class TransformerBlock(nn.Module):
         self.attention = Attention(
             num_attention_heads=self.num_attention_heads,
             embedding_dim=self.embedding_dim,
-            max_batch_size=self.max_batch_size,
-            max_seq_len=self.max_seq_len,
         )
         self.feed_forward = MLP(
             dim=self.embedding_dim,
@@ -51,12 +49,11 @@ class TransformerBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        start_pos: int,
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
     ):
         h = x + self.attention.forward(
-            self.attention_norm(x), start_pos, freqs_cis, mask
+            self.attention_norm(x), freqs_cis, mask
         )
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out

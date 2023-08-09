@@ -125,6 +125,10 @@ if __name__ == "__main__":
         type=str,
         default="I believe the meaning of life is",
     )
+    parser.add_argument(
+        "--checkpoint-path",
+        type=str
+    )
 
     if not torch.distributed.is_initialized():
             torch.distributed.init_process_group("nccl")
@@ -157,9 +161,9 @@ if __name__ == "__main__":
         ).to(args.device)
 
         checkpoint = torch.load(
-            "../llama-2-7b/consolidated.00.pth", map_location=args.device
+            args.checkpoint_path, map_location=args.device
         )
-        checkpoint.pop("rope.freqs")
+        # checkpoint.pop("rope.freqs") only necessary on original Meta weights
         model.load_state_dict(checkpoint)
 
         generations = sample(
